@@ -62,15 +62,14 @@ class ReplayMemory(object):
 BATCH_SIZE = 128
 GAMMA = 0.99
 EPS_START = 0.9
-EPS_END = 0.001
+EPS_END = 0.001 #in long games each action is really important, so we want to be greedy after lots of training
 EPS_DECAY = 1000
 TAU = 0.005
-LR = 1e-4
+LR = 1e-4   
 
-# Get number of actions from gym action space
+# 4 actions, left, right, up, down
 n_actions = 4
 # Get the number of state observations
-
 env.reset()
 
 observation, reward, termination, truncation, info = env.last()
@@ -81,28 +80,41 @@ observation, reward, termination, truncation, info = env.last()
 '''
 
 
-
+'''turn the observation dictionary we get from the environment into a matrix of values
+we get:
+The snakes health
+Where our snakes head is
+Where its body segments are
+Where the food is
+'''
 def observation_to_values(observation):
     board = observation['board']
     health = 100
     head_matrix = [] #0 unless the head on that cell, then 1
     body_matrix = [] #0 unless a body segment on that cell, then 1
     food_matrix = [] #0 unless food on that cell, then 1
+    #iterate over the grid
     for x in range(0, board["height"]):
+        #fill the current row with 0s
         head_matrix.append([0 for i in range(board["width"])])
         body_matrix.append([0 for i in range(board["width"])])
         food_matrix.append([0 for i in range(board["width"])]) 
         for y in range(0, board["width"]):
             for snake in board["snakes"]:
                 health = snake["health"]
+                #if the head is on this cell, set the head matrix to 1
                 if snake["head"]["x"] == x and snake["head"]["y"] == y:
                     head_matrix[x][y] = 1
+                #if a body segment is on this cell, set the body matrix to 1
                 for body in snake["body"]:
                     if body["x"] == x and body["y"] == y:
                         body_matrix[x][y] = 1
+            #if food is on this cell, set the food matrix to 1
             for food in board["food"]:
                 if food["x"] == x and food["y"] == y:
                     food_matrix[x][y] = 1
+
+    #flatten the matrices into a single vector
     values = []
     for x in head_matrix:
         for y in x:
@@ -116,21 +128,27 @@ def observation_to_values(observation):
     values.append(health) 
     return values
 
-
+#get the observation vector
 state = observation_to_values(observation["observation"])
-n_observations = len(state)
-#print("size of obs vector: ", n_observations)
-policy_net = DQN(n_observations, n_actions).to(device)
-target_net = DQN(n_observations, n_actions).to(device)
-target_net.load_state_dict(policy_net.state_dict())
+n_observations = len(state) #note the length of the vector
 
+#print("size of obs vector: ", n_observations)
+
+#initialize the networks
+policy_net = DQN(n_observations, n_actions).to(device) 
+target_net = DQN(n_observations, n_actions).to(device) 
+target_net.load_state_dict(policy_net.state_dict()) 
+
+#initialize the optimizer
 optimizer = optim.AdamW(policy_net.parameters(), lr=LR, amsgrad=True)
+
+#initialize the replay memory
 memory = ReplayMemory(10000)
 
 
 steps_done = 0
 
-
+'''Select an action using the policy network, or a random action with probability epsilon'''
 def select_action(state):
     global steps_done
     sample = random.random()
@@ -147,9 +165,10 @@ def select_action(state):
         return torch.tensor([[env.action_space(env.agents[0]).sample()]], device=device, dtype=torch.long)
 
 
+# number of turns the snake survives in each episode
 episode_durations = []
 
-
+'''interactive plotting'''
 def plot_durations(show_result=False):
     plt.figure(1)
     durations_t = torch.tensor(episode_durations, dtype=torch.float)
@@ -170,6 +189,10 @@ def plot_durations(show_result=False):
     plt.pause(0.001)  # pause a bit so that plots are updated
 
 
+
+'''Optimize our Q function approximator using the replay memory
+Mostly pulled from the pytorch DQN tutorial
+'''
 def optimize_model():
     if len(memory) < BATCH_SIZE:
         return
@@ -184,6 +207,7 @@ def optimize_model():
     # (a final state would've been the one after which simulation ended)
     non_final_mask = torch.tensor(tuple(map(lambda s: s is not None,
                                           batch.next_state)), device=device, dtype=torch.bool)
+
     non_final_next_states = torch.cat([s for s in batch.next_state
                                                 if s is not None])
     state_batch = torch.cat(batch.state)
@@ -201,6 +225,7 @@ def optimize_model():
     # This is merged based on the mask, such that we'll have either the expected
     # state value or 0 in case the state was final.
     next_state_values = torch.zeros(BATCH_SIZE, device=device)
+    
     with torch.no_grad():
         next_state_values[non_final_mask] = target_net(non_final_next_states).max(1)[0]
     # Compute the expected Q values
@@ -217,7 +242,8 @@ def optimize_model():
     torch.nn.utils.clip_grad_value_(policy_net.parameters(), 100)
     optimizer.step()
 
-num_episodes = 20000
+#in test reaches about 250 turns on average in 2000 episodes
+num_episodes = 2000
 
 for i_episode in range(num_episodes):
     # Initialize the environment and get it's state
@@ -229,15 +255,15 @@ for i_episode in range(num_episodes):
     #print("state: ", state)
     state = torch.tensor(state, dtype=torch.float32, device=device).unsqueeze(0)
     done = False
+
     while not done:
         agent = env.agents[0]
         action = select_action(state)
         env.step(action.item())
         observation, reward, terminated, truncated, _ = env.last()
-        reward = torch.tensor([reward], device=device)
         done = terminated or truncated
         if i_episode % 100 == 0:
-            time.sleep(0.5)
+            time.sleep(0.1)
             env.render()
         if terminated:
             reward = 0
@@ -267,7 +293,7 @@ for i_episode in range(num_episodes):
 
         if done:
             episode_durations.append(t + 1)
-            if i_episode % 1000 == 0:
+            if i_episode % 100 == 0 and i_episode != 0: #only plotting every 100 eps to avoid the annoying popups
                 plot_durations()
             break
 
